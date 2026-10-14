@@ -1,0 +1,80 @@
+<!doctype html>
+<!--
+  Copyright (c) Privasys. All rights reserved.
+  Licensed under the GNU Affero General Public License v3.0. See LICENSE.
+
+  The browser shell. This file is part of the measured image and is served
+  in the clear on the static surface, so it must contain no data: only code
+  and text a verifier can read off the image.
+-->
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>container-app-web</title>
+  <style>
+    :root { color-scheme: light dark; font-family: system-ui, sans-serif; }
+    body { max-width: 44rem; margin: 2rem auto; padding: 0 1rem; line-height: 1.5; }
+    h1 { font-size: 1.4rem; }
+    section { margin: 1.5rem 0; padding: 1rem; border: 1px solid #8884; border-radius: 6px; }
+    section h2 { font-size: 1rem; margin: 0 0 .5rem; }
+    .surface { font-size: .8rem; padding: .1rem .4rem; border-radius: 4px; margin-left: .5rem; }
+    .public  { background: #2a7a2a22; color: #2a7a2a; }
+    .private { background: #7a2a2a22; color: #a33; }
+    button { font: inherit; padding: .4rem .8rem; cursor: pointer; }
+    pre { background: #8881; padding: .75rem; overflow-x: auto; white-space: pre-wrap; min-height: 1.5rem; }
+    code { font-size: .9em; }
+  </style>
+</head>
+<body>
+  <h1>container-app-web</h1>
+  <p>
+    One app, three surfaces. This page is the <strong>static</strong> surface:
+    measured code served in the clear. Each button below calls a different
+    surface and shows the raw answer.
+  </p>
+
+  <section>
+    <h2>Read public status <span class="surface public">public</span></h2>
+    <p>
+      <code>GET /api/v1/public/status</code> is declared public in the
+      manifest. It is served in the clear, carries no identity, and the
+      runtime marks it <code>X-Privasys-Transport: public</code>.
+    </p>
+    <button id="btn-status">Read public status</button>
+    <pre id="out-status"></pre>
+  </section>
+
+  <section>
+    <h2>Who am I <span class="surface private">private</span></h2>
+    <p>
+      <code>GET /api/v1/me</code> is not declared, so it is private: only a
+      sealed session or an RA-TLS connection reaches it. A signed-in page
+      calls it through the
+      <a href="https://docs.privasys.org/solutions/privasys-id/auth-sdk">Privasys auth SDK</a>,
+      which seals the request inside the browser and gives the app the
+      user's per-app subject. This template does not include the SDK. The
+      button makes a plain fetch instead, to show what a browser gets
+      without a sealed session: <code>403 sealed-transport-required</code>,
+      answered by the runtime before the app sees anything. (Run locally,
+      with no runtime in front, the app answers 200 with an empty subject.)
+    </p>
+    <button id="btn-me">Who am I (private)</button>
+    <pre id="out-me"></pre>
+  </section>
+
+  <section>
+    <h2>Stored webhook events <span class="surface private">private</span></h2>
+    <p>
+      <code>GET /api/v1/events</code> lists the events accepted on the
+      public webhook <code>POST /api/v1/webhooks/demo</code>. Receiving is
+      public (the sender signs the body); reading is private. Same plain
+      fetch, same refusal.
+    </p>
+    <button id="btn-events">Read events (private)</button>
+    <pre id="out-events"></pre>
+  </section>
+
+  <script src="/assets/app.js"></script>
+</body>
+</html>

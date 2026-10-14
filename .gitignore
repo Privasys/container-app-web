@@ -1,0 +1,11 @@
+# Build output
+/container-app-web
+/container-app-web.exe
+/out/
+
+# Local run state (the sealed volume's stand-in)
+/.data/
+
+# Go
+*.test
+*.out

@@ -1,0 +1,182 @@
+# Copyright (c) 2026 Privasys.
+# Licensed under the GNU Affero General Public License v3.0.
+#
+# Test and smoke-test on every push and pull request; publish + release
+# ONLY on a `v*` git tag.
+#
+# Platform contract:
+#   - A deployable "version" == a TAG on the GHCR image. We publish exactly
+#     ONE semver tag per git tag: no tag, no image.
+#   - Single-arch linux/amd64 with provenance/sbom off: an OCI attestation
+#     index would change the manifest digest the enclave pins at OID
+#     1.3.6.1.4.1.65230.3.2.
+#   - privasys.json rides the image as the org.privasys.manifest label. It
+#     carries the tools and the surfaces declaration, so the surfaces are
+#     measured: a verifier reads off the image what the app serves in the
+#     clear.
+#   - Each release records the digest, so a deployer can pin the image by
+#     digest and a verifying client can check what it is talking to.
+
+name: Build and Release container-app-web
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE: ghcr.io/privasys/container-app-web
+
+jobs:
+  # The binary builds, the tests pass, the code is formatted.
+  smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.26'
+          cache: true
+      - name: Vet
+        run: go vet ./...
+      - name: Build
+        run: go build ./...
+      - name: Test
+        run: go test -race ./...
+      - name: Check formatting
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "::error::gofmt would change these files:"; echo "$unformatted"; exit 1
+          fi
+
+      # Build-contract gate: the platform runs containers on the host
+      # network and injects a unique $PORT per app; the app MUST listen on
+      # it. The image is then driven the way the platform and a sender
+      # would: the probe, the public read, a signed and an unsigned webhook.
+      - name: Image serves on the injected $PORT
+        run: |
+          set -euo pipefail
+          docker build -t caw-smoke .
+          PORT=18080
+          docker run -d --name caw-smoke -e PORT=$PORT -p $PORT:$PORT caw-smoke
+          ok=0
+          for _ in $(seq 1 15); do
+            if curl -fs "http://localhost:$PORT/health" | grep -q '"status"'; then ok=1; break; fi
+            sleep 1
+          done
+          if [ "$ok" != "1" ]; then
+            echo "::error::Image did not serve /health on the injected PORT=$PORT."
+            docker logs caw-smoke || true; exit 1
+          fi
+
+          curl -fsS "http://localhost:$PORT/" | grep -q '<title>container-app-web</title>'
+          curl -fsS "http://localhost:$PORT/api/v1/public/status" | grep -q '"events":0'
+
+          BODY='{"event":"ping"}'
+          SIG=$(printf '%s' "$BODY" | openssl dgst -sha256 -hmac demo | sed 's/^.*= //')
+          code=$(curl -s -o /dev/null -w '%{http_code}' -X POST "http://localhost:$PORT/api/v1/webhooks/demo" \
+            -H 'Content-Type: application/json' -H "X-Demo-Signature: $SIG" -d "$BODY")
+          if [ "$code" != "202" ]; then
+            echo "::error::A signed webhook answered $code, expected 202."; exit 1
+          fi
+          code=$(curl -s -o /dev/null -w '%{http_code}' -X POST "http://localhost:$PORT/api/v1/webhooks/demo" \
+            -H 'Content-Type: application/json' -H "X-Demo-Signature: 00" -d "$BODY")
+          if [ "$code" != "401" ]; then
+            echo "::error::An unsigned webhook answered $code, expected 401."; exit 1
+          fi
+          curl -fsS "http://localhost:$PORT/api/v1/public/status" | grep -q '"events":1'
+
+          echo "--- container logs ---"; docker logs caw-smoke || true
+          docker rm -f caw-smoke >/dev/null 2>&1 || true
+          echo "listens on \$PORT, serves the shell and the public read, accepts a signed webhook and refuses an unsigned one"
+
+  build:
+    needs: smoke
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write      # cut the GitHub Release
+      packages: write      # push to GHCR
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Resolve tag
+        id: tag
+        run: echo "tag=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
+
+      # Embed privasys.json (tools, surfaces, store listing) as the
+      # org.privasys.manifest OCI label so the platform detects the tools
+      # and the surfaces. base64 survives the CSV label parser; the platform
+      # decodes it.
+      - name: Read privasys.json
+        id: manifest
+        run: |
+          if [ -f privasys.json ]; then
+            echo "json=$(jq -c . privasys.json | base64 -w0)" >> "$GITHUB_OUTPUT"
+          fi
+
+      - id: build
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          push: true
+          platforms: linux/amd64
+          provenance: false
+          sbom: false
+          build-args: VERSION=${{ steps.tag.outputs.tag }}
+          tags: ${{ env.IMAGE }}:${{ steps.tag.outputs.tag }}
+          labels: org.privasys.manifest=${{ steps.manifest.outputs.json }}
+
+      - name: Cut GitHub Release (Measurements)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+          TAG: ${{ steps.tag.outputs.tag }}
+          SHA: ${{ github.sha }}
+        run: |
+          cat > notes.md <<EOF
+          ## Measurements
+
+          | Measurement | Value |
+          |-------------|-------|
+          | **Workload image digest** | \`${DIGEST}\` |
+          | **Attestation OID** | \`1.3.6.1.4.1.65230.3.2\` |
+          | **Pinned reference** | \`${IMAGE}@${DIGEST}\` |
+          | **Source commit** | \`${SHA}\` |
+
+          The workload image digest is the SHA-256 manifest digest of the published
+          container image. The enclave measures it into the RA-TLS leaf certificate
+          at OID **1.3.6.1.4.1.65230.3.2**; clients verify the running app is exactly
+          this image by inspecting the TDX quote in the server certificate. The
+          image's manifest label declares what the app serves in the clear, so the
+          digest covers that declaration too.
+          EOF
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release edit "$TAG" --notes-file notes.md
+          else
+            gh release create "$TAG" --title "$TAG" --notes-file notes.md --generate-notes --verify-tag
+          fi
+
+      - name: Summary
+        run: |
+          {
+            echo "## ${{ steps.tag.outputs.tag }} published"
+            echo
+            echo '```'
+            echo "${IMAGE}@${{ steps.build.outputs.digest }}"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

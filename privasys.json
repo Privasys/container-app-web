@@ -1,0 +1,36 @@
+{
+    "tools": [
+        {
+            "name": "status",
+            "role": "status",
+            "description": "Public status of the app: name, version, the transport the request arrived on, how many webhook events are stored, and the time. The same data anyone can read in the clear at GET /api/v1/public/status.",
+            "endpoint": "/api/v1/public/status",
+            "inputSchema": { "type": "object", "properties": {} }
+        },
+        {
+            "name": "events",
+            "role": "status",
+            "description": "The webhook events accepted on POST /api/v1/webhooks/demo, oldest first (the last 100). Private: reachable only over a sealed session or RA-TLS.",
+            "endpoint": "/api/v1/events",
+            "inputSchema": { "type": "object", "properties": {} }
+        }
+    ],
+    "surfaces": {
+        "static": ["/", "/assets/"],
+        "public": [
+            { "method": "GET",  "path": "/api/v1/public/" },
+            { "method": "POST", "path": "/api/v1/webhooks/demo", "headers": ["X-Demo-Signature"] }
+        ],
+        "cors": "*"
+    },
+    "store": {
+        "tagline": "Template container app with the three surfaces: private by default, a static browser shell, and explicit public routes served in the clear.",
+        "category": "Developer Tools",
+        "keywords": "container, template, example, surfaces, public api, webhook, static, sealed session, ra-tls, attestation, enclave os, tdx, confidential computing, mcp",
+        "website_url": "https://privasys.org",
+        "support_email": "contact@privasys.org",
+        "privacy_url": "https://privasys.org/legal/privacy/",
+        "tos_url": "https://privasys.org/legal/terms/",
+        "description": "container-app-web is the template for a container app on the Privasys platform that serves a web page and a public API next to its private data.\n\nTHREE SURFACES\nEverything an app serves is private unless its manifest says otherwise. This template declares a static surface (the browser shell, served in the clear so the page can load before a sealed session exists) and two public routes (a JSON status read and an inbound webhook). Everything else, including the signed-in user's identity and the stored events, is reachable only over a sealed session or RA-TLS.\n\nMEASURED\nThe declaration rides the image's manifest label, so a verifier reads off the image exactly which routes this app serves in the clear, and changing them changes the digest the owner approves.\n\nANONYMOUS BY CONSTRUCTION\nOn a public route the runtime removes every credential and identity header before the app sees the request, so a mistake in app code cannot turn a public route into a channel for account data.\n\nWHO IT IS FOR\nDevelopers who need a web app, a public read or an inbound webhook on an app whose data must stay private."
+    }
+}

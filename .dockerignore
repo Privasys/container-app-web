@@ -1,0 +1,8 @@
+.git
+.github
+.data
+*.md
+*.test
+*.out
+container-app-web
+container-app-web.exe
